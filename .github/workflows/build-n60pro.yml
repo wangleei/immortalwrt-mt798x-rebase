@@ -1,0 +1,261 @@
+name: "Build N60 PRO Optimized Firmware"
+
+on:
+  workflow_dispatch:
+    inputs:
+      firmware_version:
+        description: '固件版本号'
+        required: true
+        default: '25.12-optimized'
+        type: string
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'defconfig/n60pro-optimized.config'
+      - '.github/workflows/build-n60pro.yml'
+      - 'files/**'
+
+env:
+  REPO_URL: https://github.com/chasey-dev/immortalwrt-mt798x-rebase.git
+  REPO_BRANCH: 25.12-dev
+  BUILD_DIR: immortalwrt-mt798x
+  DEFCONFIG: n60pro-optimized.config
+  UPLOAD_NAME: immortalwrt-25.12-n60pro-optimized
+
+jobs:
+  build:
+    name: Compile N60 PRO Firmware
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      # ============================================================
+      # Step 1: 准备构建环境
+      # ============================================================
+      - name: Maximize disk space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 4096
+          swap-size-mb: 2048
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+          remove-codeql: true
+          remove-docker-images: true
+
+      - name: Check available disk space
+        run: |
+          echo "=== Disk Space ==="
+          df -h /
+          echo "=== Memory ==="
+          free -h
+
+      # ============================================================
+      # Step 2: 安装编译依赖
+      # ============================================================
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential gcc g++ binutils flex bison gawk gettext \
+            libncurses5-dev libncursesw5-dev unzip python3 python3-pip \
+            python3-setuptools file wget rsync zstd git-core \
+            libssl-dev libelf-dev quilt ccache \
+            time perl-modules-5.34 \
+            device-tree-compiler u-boot-tools \
+            libfdt-dev cpio squashfs-tools
+
+      # ============================================================
+      # Step 3: 设置 ccache 加速重复编译
+      # ============================================================
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: n60pro-25.12
+          max-size: 2G
+
+      # ============================================================
+      # Step 4: 克隆源码
+      # ============================================================
+      - name: Clone source code
+        run: |
+          git clone --depth=1 --branch ${{ env.REPO_BRANCH }} \
+            ${{ env.REPO_URL }} ${{ env.BUILD_DIR }}
+          echo "Source cloned: $(git -C ${{ env.BUILD_DIR }} log -1 --oneline)"
+
+      # ============================================================
+      # Step 5: 注入自定义文件
+      # ============================================================
+      - name: Inject custom files
+        run: |
+          if [ -d "files" ] && [ "$(ls -A files 2>/dev/null)" ]; then
+            echo "Copying custom files to build root..."
+            cp -rf files/* ${{ env.BUILD_DIR }}/files/
+            echo "Custom files injected:"
+            find ${{ env.BUILD_DIR }}/files/ -type f | sort
+          else
+            echo "No custom files to inject"
+          fi
+
+      # ============================================================
+      # Step 6: 复制 defconfig
+      # ============================================================
+      - name: Apply defconfig
+        run: |
+          cp defconfig/${{ env.DEFCONFIG }} ${{ env.BUILD_DIR }}/.config
+          echo "Defconfig applied: ${{ env.DEFCONFIG }}"
+
+      # ============================================================
+      # Step 7: 更新 feeds
+      # ============================================================
+      - name: Update package feeds
+        run: |
+          cd ${{ env.BUILD_DIR }}
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      # ============================================================
+      # Step 8: 展开 defconfig
+      # ============================================================
+      - name: Expand defconfig
+        run: |
+          cd ${{ env.BUILD_DIR }}
+          make defconfig
+          echo "=== Final .config diff vs defconfig ==="
+          diff ../defconfig/${{ env.DEFCONFIG }} .config || true
+
+      # ============================================================
+      # Step 9: 下载所有源码包（提前下载，避免编译中途网络问题）
+      # ============================================================
+      - name: Pre-download sources
+        run: |
+          cd ${{ env.BUILD_DIR }}
+          make download -j$(nproc) V=s || echo "Some downloads failed, will retry during build"
+
+      # ============================================================
+      # Step 10: 编译固件
+      # ============================================================
+      - name: Build firmware
+        id: build
+        run: |
+          cd ${{ env.BUILD_DIR }}
+          echo "Starting compilation with $(nproc) parallel jobs..."
+          make -j$(nproc) V=s 2>&1 | tee build.log
+          echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # Step 11: 检查编译结果
+      # ============================================================
+      - name: Verify build output
+        if: success() || failure()
+        run: |
+          echo "=== Checking build output ==="
+          TARGET_DIR="${{ env.BUILD_DIR }}/bin/targets/mediatek/filogic"
+          if [ -d "$TARGET_DIR" ]; then
+            echo "Build artifacts:"
+            find "$TARGET_DIR" -type f \( -name "*.bin" -o -name "*.manifest" -o -name "*.itb" \) \
+              -exec ls -lh {} \;
+          else
+            echo "ERROR: No build output found at $TARGET_DIR"
+            echo "Checking for build errors..."
+            grep -i "error\|fatal\|failed" ${{ env.BUILD_DIR }}/build.log | tail -50 || true
+          fi
+
+      # ============================================================
+      # Step 12: 整理和重命名固件
+      # ============================================================
+      - name: Prepare release artifacts
+        if: success() || failure()
+        run: |
+          mkdir -p release
+          TARGET_DIR="${{ env.BUILD_DIR }}/bin/targets/mediatek/filogic"
+
+          VERSION="${{ github.event.inputs.firmware_version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(date +%Y%m%d)-${GITHUB_SHA::7}"
+          fi
+
+          if [ -d "$TARGET_DIR" ]; then
+            # 复制固件并重命名
+            for f in "$TARGET_DIR"/*netcore_n60-pro*.bin; do
+              if [ -f "$f" ]; then
+                base=$(basename "$f")
+                cp "$f" "release/immortalwrt-${VERSION}-${base}"
+              fi
+            done
+            # 复制 manifest
+            for f in "$TARGET_DIR"/*netcore_n60-pro*.manifest; do
+              if [ -f "$f" ]; then
+                cp "$f" release/
+              fi
+            done
+            # 复制 sha256sums
+            if [ -f "$TARGET_DIR/sha256sums" ]; then
+              grep "netcore_n60-pro" "$TARGET_DIR/sha256sums" > release/sha256sums.txt
+            fi
+          fi
+
+          echo "=== Release files ==="
+          ls -lh release/
+
+      # ============================================================
+      # Step 13: 上传固件 Artifact
+      # ============================================================
+      - name: Upload firmware artifact
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.UPLOAD_NAME }}
+          path: release/
+          retention-days: 30
+          compression-level: 6
+
+      # ============================================================
+      # Step 14: 上传编译日志（用于排查失败）
+      # ============================================================
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-debug
+          path: ${{ env.BUILD_DIR }}/build.log
+          retention-days: 7
+
+      # ============================================================
+      # Step 15: 生成 Release Summary
+      # ============================================================
+      - name: Generate summary
+        if: success() || failure()
+        run: |
+          VERSION="${{ github.event.inputs.firmware_version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(date +%Y%m%d)-${GITHUB_SHA::7}"
+          fi
+
+          echo "## N60 PRO Optimized Firmware Build" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${VERSION}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Source:** chasey-dev/immortalwrt-mt798x-rebase (25.12-dev)" >> $GITHUB_STEP_SUMMARY
+          echo "**Kernel:** Linux 6.12" >> $GITHUB_STEP_SUMMARY
+          echo "**WiFi Driver:** MTK mtwifi v7.6.7.3 (closed-source)" >> $GITHUB_STEP_SUMMARY
+          echo "**WiFi Power:** 25dBm (with thermal protection)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Features" >> $GITHUB_STEP_SUMMARY
+          echo "- HNAT hardware NAT offload + WARP v2 acceleration" >> $GITHUB_STEP_SUMMARY
+          echo "- TCP BBR congestion control" >> $GITHUB_STEP_SUMMARY
+          echo "- zram swap (256MB, zstd)" >> $GITHUB_STEP_SUMMARY
+          echo "- CPU ondemand governor + thermal protection" >> $GITHUB_STEP_SUMMARY
+          echo "- IRQ balancing + network tuning" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -d "release" ] && [ "$(ls -A release/*.bin 2>/dev/null)" ]; then
+            echo "### Firmware Files" >> $GITHUB_STEP_SUMMARY
+            for f in release/*.bin; do
+              echo "- \`$(basename $f)\` ($(du -h $f | cut -f1))" >> $GITHUB_STEP_SUMMARY
+            done
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Build successful!** Download from the Artifacts section above." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Build failed.** Check the build log for details." >> $GITHUB_STEP_SUMMARY
+          fi

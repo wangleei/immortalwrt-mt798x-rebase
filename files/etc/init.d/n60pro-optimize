@@ -1,0 +1,135 @@
+#!/bin/sh /etc/rc.common
+#
+# /etc/init.d/n60pro-optimize
+# N60 PRO 启动优化脚本
+# 在系统启动完成后执行一次性优化
+#
+
+START=95
+STOP=10
+
+boot() {
+    # 延迟到系统完全启动后
+    sleep 5
+    start
+}
+
+start() {
+    local LOG_TAG="n60pro-optimize"
+    logger -t "$LOG_TAG" "Applying N60 PRO optimizations..."
+
+    # ====================================================================
+    # 1. CPU Governor — ondemand (空闲降频，负载升频)
+    # ====================================================================
+    if [ -d /sys/devices/system/cpu/cpufreq ]; then
+        for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+            if [ -f "$policy/scaling_governor" ]; then
+                echo "ondemand" > "$policy/scaling_governor" 2>/dev/null || true
+                logger -t "$LOG_TAG" "CPU governor: ondemand ($(cat $policy/scaling_governor 2>/dev/null))"
+            fi
+        done
+    fi
+
+    # ====================================================================
+    # 2. IRQ Balance — 启动中断均衡
+    # ====================================================================
+    if [ -x /usr/sbin/irqbalance ]; then
+        /usr/sbin/irqbalance -t 100 &
+        logger -t "$LOG_TAG" "IRQ balance started"
+    fi
+
+    # ====================================================================
+    # 3. WiFi 功率 — 应用 25dBm
+    # ====================================================================
+    # MTK mtwifi 使用 iwpriv 设置功率 (索引 0=2.4G, 1=5G)
+    # TXPower 单位: 百分比 (100 = 最大 SKU 功率)
+    # 25dBm 对应 SKU AX6000 的 100%
+    for ra_if in ra0 rai0; do
+        if [ -d "/sys/class/net/$ra_if" ]; then
+            # 确保接口已启动
+            ifconfig "$ra_if" up 2>/dev/null || true
+            # 设置 TX 功率到最大值
+            iwpriv "$ra_if" set TxPower=100 2>/dev/null || true
+            logger -t "$LOG_TAG" "WiFi $ra_if: TX power set to 25dBm (100%)"
+        fi
+    done
+
+    # 同时通过 iw 命令设置 (如果 mtwifi 支持标准 nl80211 扩展)
+    for phy in /sys/class/ieee80211/phy*; do
+        if [ -d "$phy" ]; then
+            phy_name=$(basename "$phy")
+            iw dev | grep -q "Interface" && iw "$phy_name" set txpower fixed 2500 2>/dev/null || true
+        fi
+    done
+
+    # ====================================================================
+    # 4. 网络接口 RPS (Receive Packet Steering) — 分散网卡中断
+    # ====================================================================
+    # 获取 CPU 核心数
+    CPU_COUNT=$(nproc 2>/dev/null || echo 4)
+    # 计算 CPU 掩码 (所有核心)
+    if [ "$CPU_COUNT" -gt 0 ]; then
+        RPS_MASK=$(( (1 << CPU_COUNT) - 1 ))
+        # 转换为十六进制
+        RPS_MASK_HEX=$(printf "%x" $RPS_MASK)
+
+        # 为所有物理网卡启用 RPS
+        for iface in eth0 eth1 lan1 lan2 lan3 lan4; do
+            if [ -d "/sys/class/net/$iface" ]; then
+                echo "$RPS_MASK_HEX" > "/sys/class/net/$iface/queues/rx-0/rps_cpus" 2>/dev/null || true
+            fi
+        done
+        logger -t "$LOG_TAG" "RPS enabled with CPU mask: $RPS_MASK_HEX"
+    fi
+
+    # ====================================================================
+    # 5. zram swap — 确保 zram 正确配置
+    # ====================================================================
+    if [ -x /sbin/zramctl ]; then
+        # 默认 zram-swap 包已在 /etc/config/system 中配置
+        # 这里确保它运行在最佳设置
+        if [ -e /dev/zram0 ]; then
+            # 强制使用 zstd 压缩
+            echo "zstd" > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+            logger -t "$LOG_TAG" "zram compression: $(cat /sys/block/zram0/comp_algorithm 2>/dev/null)"
+        fi
+    fi
+
+    # ====================================================================
+    # 6. 应用 sysctl 配置
+    # ====================================================================
+    if [ -f /etc/sysctl.d/10-n60pro-network.conf ]; then
+        sysctl -p /etc/sysctl.d/10-n60pro-network.conf 2>/dev/null || true
+        logger -t "$LOG_TAG" "sysctl network tuning applied"
+    fi
+
+    # ====================================================================
+    # 7. HNAT 状态确认
+    # ====================================================================
+    if grep -q "mtkhnat" /proc/modules 2>/dev/null; then
+        logger -t "$LOG_TAG" "HNAT module loaded: OK"
+    fi
+    if grep -q "warp" /proc/modules 2>/dev/null; then
+        logger -t "$LOG_TAG" "WARP module loaded: OK"
+    fi
+
+    # ====================================================================
+    # 8. 设置系统主机名
+    # ====================================================================
+    uci set system.@system[0].hostname='N60Pro' 2>/dev/null || true
+    uci commit system 2>/dev/null || true
+
+    logger -t "$LOG_TAG" "All optimizations applied successfully"
+    echo "N60 PRO optimized. Free memory: $(free -m | awk '/Mem:/{print $4}')MB"
+}
+
+stop() {
+    # 停止 irqbalance
+    killall irqbalance 2>/dev/null || true
+    logger -t "n60pro-optimize" "Optimizations stopped"
+}
+
+restart() {
+    stop
+    start
+}

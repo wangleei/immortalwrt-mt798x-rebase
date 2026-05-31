@@ -1,0 +1,13 @@
+#
+# /etc/rc.local — N60 PRO 启动后执行
+# 确保所有优化正常生效
+#
+
+# 设置 hostname
+uci set system.@system[0].hostname='N60Pro' 2>/dev/null
+uci commit system 2>/dev/null
+
+# 启用 n60pro-optimize 服务
+[ -x /etc/init.d/n60pro-optimize ] && /etc/init.d/n60pro-optimize enable 2>/dev/null
+
+exit 0

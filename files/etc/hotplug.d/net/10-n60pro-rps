@@ -1,0 +1,17 @@
+#!/bin/sh
+#
+# /etc/hotplug.d/net/10-n60pro-rps
+# 网络接口热插拔时自动启用 RPS
+#
+
+[ "$ACTION" = "add" ] || exit 0
+
+CPU_COUNT=$(nproc 2>/dev/null || echo 4)
+RPS_MASK=$(( (1 << CPU_COUNT) - 1 ))
+RPS_MASK_HEX=$(printf "%x" $RPS_MASK)
+
+# 为新添加的接口启用 RPS
+if [ -d "/sys/class/net/$INTERFACE/queues/rx-0" ]; then
+    echo "$RPS_MASK_HEX" > "/sys/class/net/$INTERFACE/queues/rx-0/rps_cpus" 2>/dev/null || true
+    logger -t "n60pro-hotplug" "RPS enabled for $INTERFACE (mask: $RPS_MASK_HEX)"
+fi
