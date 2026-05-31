@@ -27,27 +27,33 @@ env:
 jobs:
   build:
     name: Compile N60 PRO Firmware
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
 
     steps:
       # ============================================================
-      # Step 1: 准备构建环境
+      # Step 1: 释放磁盘空间（清理预装的无用软件）
       # ============================================================
-      - name: Maximize disk space
-        uses: easimon/maximize-build-space@master
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
         with:
-          root-reserve-mb: 4096
-          swap-size-mb: 2048
-          remove-dotnet: true
-          remove-android: true
-          remove-haskell: true
-          remove-codeql: true
-          remove-docker-images: true
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
-      - name: Check available disk space
+      - name: Manual cleanup (extra safety)
         run: |
-          echo "=== Disk Space ==="
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo rm -rf /usr/local/.ghcup /usr/local/share/powershell
+          sudo rm -rf /usr/lib/mono /usr/local/julia*
+          sudo rm -rf /usr/share/swift /usr/local/lib/node_modules
+          sudo apt-get clean
+          sudo docker system prune -af 2>/dev/null || true
+          echo "=== Disk Space After Cleanup ==="
           df -h /
           echo "=== Memory ==="
           free -h
@@ -58,23 +64,23 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             build-essential gcc g++ binutils flex bison gawk gettext \
             libncurses5-dev libncursesw5-dev unzip python3 python3-pip \
             python3-setuptools file wget rsync zstd git-core \
             libssl-dev libelf-dev quilt ccache \
-            time perl-modules-5.34 \
+            time \
             device-tree-compiler u-boot-tools \
             libfdt-dev cpio squashfs-tools
 
       # ============================================================
-      # Step 3: 设置 ccache 加速重复编译
+      # Step 3: 设置 ccache
       # ============================================================
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1
         with:
           key: n60pro-25.12
-          max-size: 2G
+          max-size: 1G
 
       # ============================================================
       # Step 4: 克隆源码
@@ -237,7 +243,7 @@ jobs:
           echo "## N60 PRO Optimized Firmware Build" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** \`${VERSION}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Source:** chasey-dev/immortalwrt-mt798x-rebase (25.12)" >> $GITHUB_STEP_SUMMARY
+          echo "**Source:** chasey-dev/immortalwrt-mt798x-rebase (25.12-dev)" >> $GITHUB_STEP_SUMMARY
           echo "**Kernel:** Linux 6.12" >> $GITHUB_STEP_SUMMARY
           echo "**WiFi Driver:** MTK mtwifi v7.6.7.3 (closed-source)" >> $GITHUB_STEP_SUMMARY
           echo "**WiFi Power:** 25dBm (with thermal protection)" >> $GITHUB_STEP_SUMMARY
