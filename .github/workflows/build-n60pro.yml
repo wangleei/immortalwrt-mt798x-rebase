@@ -19,7 +19,7 @@ on:
 
 env:
   REPO_URL: https://github.com/chasey-dev/immortalwrt-mt798x-rebase.git
-  REPO_BRANCH: 25.12-dev
+  REPO_BRANCH: 25.12
   BUILD_DIR: immortalwrt-mt798x
   DEFCONFIG: n60pro-optimized.config
   UPLOAD_NAME: immortalwrt-25.12-n60pro-optimized
@@ -237,7 +237,7 @@ jobs:
           echo "## N60 PRO Optimized Firmware Build" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** \`${VERSION}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Source:** chasey-dev/immortalwrt-mt798x-rebase (25.12-dev)" >> $GITHUB_STEP_SUMMARY
+          echo "**Source:** chasey-dev/immortalwrt-mt798x-rebase (25.12)" >> $GITHUB_STEP_SUMMARY
           echo "**Kernel:** Linux 6.12" >> $GITHUB_STEP_SUMMARY
           echo "**WiFi Driver:** MTK mtwifi v7.6.7.3 (closed-source)" >> $GITHUB_STEP_SUMMARY
           echo "**WiFi Power:** 25dBm (with thermal protection)" >> $GITHUB_STEP_SUMMARY
