@@ -39,26 +39,25 @@ start() {
     fi
 
     # ====================================================================
-    # 3. WiFi 功率 — 应用 25dBm
+    # 3. WiFi 优化 — 功率 + 低延迟
     # ====================================================================
-    # MTK mtwifi 使用 iwpriv 设置功率 (索引 0=2.4G, 1=5G)
-    # TXPower 单位: 百分比 (100 = 最大 SKU 功率)
-    # 25dBm 对应 SKU AX6000 的 100%
     for ra_if in ra0 rai0; do
         if [ -d "/sys/class/net/$ra_if" ]; then
-            # 确保接口已启动
             ifconfig "$ra_if" up 2>/dev/null || true
-            # 设置 TX 功率到最大值
-            iwpriv "$ra_if" set TxPower=100 2>/dev/null || true
-            logger -t "$LOG_TAG" "WiFi $ra_if: TX power set to 25dBm (100%)"
-        fi
-    done
 
-    # 同时通过 iw 命令设置 (如果 mtwifi 支持标准 nl80211 扩展)
-    for phy in /sys/class/ieee80211/phy*; do
-        if [ -d "$phy" ]; then
-            phy_name=$(basename "$phy")
-            iw dev | grep -q "Interface" && iw "$phy_name" set txpower fixed 2500 2>/dev/null || true
+            # TX 功率 25dBm (100% SKU)
+            iwpriv "$ra_if" set TxPower=100 2>/dev/null || true
+
+            # 关闭 TWT — 防止某些客户端速率暴跌和高延迟
+            iwpriv "$ra_if" set TWTEnable=0 2>/dev/null || true
+
+            # 强制开启 WMM (QoS) 和 Short GI — 降低延迟
+            iwpriv "$ra_if" set WmmCapable=1 2>/dev/null || true
+
+            # 关闭 GreenAP — 防止节能模式引起延迟抖动
+            iwpriv "$ra_if" set GreenAP=0 2>/dev/null || true
+
+            logger -t "$LOG_TAG" "WiFi $ra_if: TX=25dBm, TWT=off, WMM=on, GreenAP=off"
         fi
     done
 
